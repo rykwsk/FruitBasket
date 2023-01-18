@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <script src="https://obniz.com/js/jquery-3.2.1.min.js"></script>
+    <script src="https://unpkg.com/obniz/obniz.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+    <script src="https://unpkg.com/ml5@latest/dist/ml5.min.js"></script>
+
+    <title>フルーツバスケット</title>
+  </head>
+  <body>
+    <div id="obniz-debug"></div>
+    <h1>
+      フルーツバスケット
+    </h1>
+    <div id="status"></div>
+    <div id="result">
+      <p>
+        ①片手を出してバスケットをフルーツに重ねます<br />②親指と人差し指でつまみます<br />制限時間30秒<br />※動作が重くなる場合があります
+      </p>
+    </div>
+    <div id="probability"></div>
+    <div id="select"></div>
+    <script>
+      const obniz = new Obniz("1363-9822"); // your obniz id
+      const LED_length = 15;
+      let leds;
+      let ledlist = [...Array(LED_length)].map(() => [0, 0, 0]);
+
+      let h = 0;
+      let s = 1.0;
+      let v = 0.2;
+
+      let video;
+      let handpose;
+      let predictions = [];
+
+      let basket;
+      let fruits = [];
+      let cutFruits;
+      let fruitsPafe;
+
+      let fruitX = 0; // フルーツのx座標
+      let fruitY = 0; // フルーツのy座標
+      let kind = 0; // フルーツの種類(0~7)
+
+      let thumbX = 0; // 親指のx座標
+      let thumbY = 0; // 親指のy座標
+      let indFinX = 0; // 人差し指のx座標
+      let indFinY = 0; // 人差し指のy座標
+
+      let scene = 0; // 場面(0:スタート画面,1:プレイ画面,2:結果表示画面)
+      let score = 0;
+      let preScore = 0; // 人差し指~小指の付け根とフルーツの衝突判定
+      let timer = 30;
+
+      // 発話機能をインスタンス化
+      let msg = new SpeechSynthesisUtterance();
+
+      let mText = "ゲット";
+
+      // 発話設定
+      function speak(mText) {
+        msg.volume = 1.0; // 音量 min 0 ~ max 1
+        msg.rate = 2.5; // 速度 min 0.5 ~ max 3.5
+        msg.pitch = 2.0; // 音程 min 0 ~ max 2
+
+        msg.text = mText; // 喋る内容
+        msg.lang = "ja-JP"; // en-US or ja-JP
+
+        // 発話実行
+        speechSynthesis.speak(msg);
+      }
+
+      msg.onend = function (event) {
+        console.log(mText);
+      };
+
+      obniz.onconnect = async function () {
+        leds = obniz.wired("WS2812", { din: 26 }); // for M5 Atom lite
+        obniz.onloop = async function () {
+          ledon();
+          obniz.wait(50);
+        };
+      };
+
+      function shift(color) {
+        ledlist.shift();
+        ledlist.push(color);
+      }
+
+      function ledon() {
+        leds.hsvs(ledlist);
+      }
+
+      function preload() {
+        basket = loadImage("img/fruits_basket.png");
+        fruits[0] = loadImage("img/fruit_ringo.png");
+        fruits[1] = loadImage("img/fruit_strawberry.png");
+        fruits[2] = loadImage("img/fruit_pineapple.png");
+        fruits[3] = loadImage("img/fruit_momo.png");
+        fruits[4] = loadImage("img/fruit_melon.png");
+        fruits[5] = loadImage("img/fruit_kaki.png");
+        fruits[6] = loadImage("img/fruit_grape_gorby.png");
+        fruits[7] = loadImage("img/fruit_banana.png");
+        cutFruits = loadImage("img/cut_fruit_moriawase.png");
+        fruitsPafe = loadImage("img/sweets_fruit_pafe.png");
+      }
+
+      function setup() {
+        createCanvas(640, 480);
+        frameRate(30);
+        video = createCapture(VIDEO);
+
+        randomFruits();
+
+        handpose = ml5.handpose(video, handModelReady);
+
+        // This sets up an event that fills the global variable "predictions"
+        // with an array every time new hand poses are detected
+        handpose.on("predict", (results) => {
+          predictions = results;
+        });
+
+        // Hide the video element, and just show the canvas
+        video.hide();
+      }
+
+      function handModelReady() {
+        console.log("Model ready!");
+      }
+
+      function draw() {
+        image(video, 0, 0, width, height);
+        textFont("sans-serif");
+        textAlign(CENTER, CENTER);
+        rectMode(CENTER);
+
+        switch (scene) {
+          case 0:
+            // スタート画面
+            stbtn();
+            break;
+          case 1:
+            // プレイ画面
+            // We can call both functions to draw all keypoints and the skeletons
+            handDrawKeypoints();
+            displayFruits();
+            play();
+            break;
+          case 2:
+            // 結果表示画面
+            result();
+            rstbtn();
+            break;
+        }
+      }
+
+      // Startボタン、Restartボタンを押したときの画面遷移等設定
+      function mousePressed() {
+        switch (scene) {
+          case 0:
+            if (
+              mouseX >= width / 4 &&
+              mouseX <= (width * 3) / 4 &&
+              mouseY >= (height * 33) / 40 &&
+              mouseY <= (height * 37) / 40
+            ) {
+              scene = 1;
+            }
+            break;
+          case 2:
+            if (
+              mouseX >= width / 4 &&
+              mouseX <= (width * 3) / 4 &&
+              mouseY >= (height * 33) / 40 &&
+              mouseY <= (height * 37) / 40
+            ) {
+              randomFruits();
+              score = 0;
+              preScore = 0;
+              timer = 30;
+              scene = 1;
+              ledlist = [...Array(LED_length)].map(() => [0, 0, 0]);
+            }
+            break;
+        }
+      }
+
+      // フルーツの種類・座標をランダムに設定
+      function randomFruits() {
+        fruitX = random(80, 560);
+        fruitY = random(80, 400);
+        kind = int(random(8));
+      }
+
+      // Startボタン
+      function stbtn() {
+        stroke("#ee7800");
+        strokeWeight(4);
+        fill("#f3981d");
+        rect(width / 2, (height * 7) / 8, width / 2, height / 10);
+
+        noStroke();
+        fill(255);
+        textSize(30);
+        text("Start!", width / 2, (height * 7) / 8);
+      }
+
+      // A function to draw ellipses over the detected keypoints
+      function handDrawKeypoints() {
+        for (let i = 0; i < predictions.length; i += 1) {
+          const prediction = predictions[i];
+          for (let j = 0; j < prediction.landmarks.length; j += 1) {
+            const keypoint = prediction.landmarks[j];
+            // 親指の座標を表示
+            if (j == 4) {
+              fill(0, 255, 0);
+              noStroke();
+              ellipse(keypoint[0], keypoint[1], 10, 10);
+              thumbX = keypoint[0];
+              thumbY = keypoint[1];
+            }
+            // 人差し指の座標を表示
+            if (j == 8) {
+              fill(0, 255, 0);
+              noStroke();
+              ellipse(keypoint[0], keypoint[1], 10, 10);
+              indFinX = keypoint[0];
+              indFinY = keypoint[1];
+            }
+            // 中指の付け根に合わせてバスケットを表示
+            if (j == 9) {
+              push();
+              imageMode(CENTER);
+              image(basket, keypoint[0], keypoint[1], 200, 200);
+              pop();
+            }
+            // 人差し指~小指の付け根とフルーツの衝突判定
+            switch (j) {
+              case 5:
+              case 9:
+              case 13:
+              case 17:
+                let fruDistance = dist(
+                  fruitX,
+                  fruitY,
+                  keypoint[0],
+                  keypoint[1]
+                );
+                if (fruDistance <= 60) {
+                  preScore = 1;
+                }
+                break;
+            }
+          }
+          // 親指と人差し指の距離を計算
+          let finDistance = dist(thumbX, thumbY, indFinX, indFinY);
+          if (finDistance <= 75 && preScore == 1) {
+            // LEDをゲットしたフルーツの色に光らせる
+            switch (kind) {
+              case 0:
+                h = 10;
+                break;
+              case 1:
+                h = 330;
+                break;
+              case 2:
+                h = 45;
+                break;
+              case 3:
+                h = 305;
+                break;
+              case 4:
+                h = 140;
+                break;
+              case 5:
+                h = 25;
+                break;
+              case 6:
+                h = 280;
+                break;
+              case 7:
+                h = 60;
+                break;
+            }
+            let color = [h, s, v];
+            shift(color); // ゲットするごとに点灯するLEDが増加
+            speak(mText); // 「ゲット」
+            score++;
+            randomFruits();
+          }
+          preScore = 0; // 衝突判定リセット
+        }
+      }
+
+      // フルーツを画面に表示
+      function displayFruits() {
+        image(fruits[kind], fruitX, fruitY, 80, 80);
+      }
+
+      // 得点・カウントダウン表示
+      function play() {
+        noStroke();
+        fill("#f3981d");
+        rect(width / 5, height / 10, (width * 5) / 12, height / 10);
+        fill(255);
+        textSize(30);
+        text("Score：" + score, width / 5, height / 10);
+
+        fill("#f3981d");
+        rect((width * 3) / 4, height / 10, width / 2, height / 10);
+        fill(255);
+        textSize(30);
+        text("Countdown：" + timer, (width * 3) / 4, height / 10);
+        if (frameCount % 30 == 0 && timer > 0) {
+          timer--;
+        }
+        if (timer == 0) {
+          scene = 2;
+        }
+      }
+
+      // 結果表示
+      function result() {
+        noStroke();
+        fill("#ffffd6");
+        rect(width / 2, (height * 2) / 5, 400, 350);
+
+        fill("#ed6d35");
+        textSize(70);
+        text("Clear!", width / 2, (height * 1) / 6);
+
+        push();
+        imageMode(CENTER);
+        if (score < 10) {
+          image(basket, width / 2, (height * 2) / 5, 150, 150);
+        } else if (score < 20) {
+          image(cutFruits, width / 2, (height * 2) / 5, 150, 150);
+        } else {
+          image(fruitsPafe, width / 2, (height * 2) / 5, 150, 150);
+        }
+        pop();
+
+        textSize(30);
+        text("Score：" + score, width / 2, (height * 2) / 3);
+      }
+
+      // Restartボタン
+      function rstbtn() {
+        stroke("#ee7800");
+        strokeWeight(4);
+        fill("#f3981d");
+        rect(width / 2, (height * 7) / 8, width / 2, height / 10);
+
+        noStroke();
+        fill(255);
+        textSize(30);
+        text("Restart!", width / 2, (height * 7) / 8);
+      }
+    </script>
+    <style>
+      body {
+        background: #ffefc3;
+        margin: 2rem;
+        text-align: center;
+      }
+      h1 {
+        margin: 0.5rem;
+        color: #fd6900;
+        font-size: 2rem;
+      }
+      p {
+        color: #612800;
+      }
+    </style>
+  </body>
+</html>
